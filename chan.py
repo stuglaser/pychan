@@ -7,39 +7,166 @@ class WTF(Exception):
     def __init__(self):
         super(WTF, self).__init__("WTF")
 
+
+class WishGroup(object):
+    def __init__(self):
+        self.fulfilled_by = None
+        self.lock = threading.Lock()
+        self.cond = threading.Condition(self.lock)
+
+    @property
+    def fulfilled(self):
+        return self.fulfilled_by is not None
+
+
+class ProduceWish(object):
+    def __init__(self, group, chan, value):
+        self.group = group
+        self.chan = chan
+        self.value = value
+
+    @property
+    def fulfilled(self):
+        return self.group.fulfilled
+
+    def fulfill(self):
+        """Must hold group.lock"""
+        self.group.fulfilled_by = self
+        self.group.cond.notify()
+        return self.value
+
+
+class ConsumeWish(object):
+    def __init__(self, group, chan):
+        self.group = group
+        self.chan = chan
+
+    @property
+    def fulfilled(self):
+        return self.group.fulfilled
+
+    def fulfill(self, value):
+        """Must hold group.lock"""
+        self.value = value
+        self.group.fulfilled_by = self
+        self.group.cond.notify()
+
+
+class WishFulfilled(Exception): pass
+class ProduceWishFulfilled(WishFulfilled): pass
+class ConsumeWishFulfilled(WishFulfilled): pass
+
+
+def _fulfill_wish_pair(produce_wish, consume_wish):
+    if produce_wish.group == consume_wish.group:
+        raise WTF()
+        # Always lock producer, then consumer
+    with produce_wish.group.lock, consume_wish.group.lock:
+        if produce_wish.fulfilled:
+            raise ProduceWishFulfilled()
+        if consume_wish.fulfilled:
+            raise ConsumeWishFulfilled()
+
+        consume_wish.fulfill(produce_wish.fulfill())
+
+
 class Chan(object):
     def __init__(self):
-        self.__lock = threading.Lock()
-        self.__cond = threading.Condition(self.__lock)
+        self._lock = threading.Lock()
 
         # TODO: Lists are inefficient lifo queues
-        self.__waiting_producers = []
-        self.__waiting_consumers = []
+        self._waiting_producers = []
+        self._waiting_consumers = []
+
+    def _submit_consume_wish(self, wish):
+        with self._lock:
+            while self._waiting_producers:
+                try:
+                    produce_wish = self._waiting_producers.pop(0)
+                    _fulfill_wish_pair(produce_wish, wish)
+                    return True  # Fulfilled successfully
+                except ProduceWishFulfilled:
+                    # This produce wish was already fulfilled.  Skip to next
+                    pass
+                except ConsumeWishFulfilled:
+                    print "WEIRD: ConsumeWishFulfilled"
+                    return True
+
+            # Wish wasn't fulfilled.  Put it in the waiting queue
+            self._waiting_consumers.append(wish)
+            return False
+
+    def _submit_produce_wish(self, wish):
+        with self._lock:
+            while self._waiting_consumers:
+                try:
+                    consume_wish = self._waiting_consumers.pop(0)
+                    _fulfill_wish_pair(wish, consume_wish)
+                    return True  # Fulfilled successfully
+                except ConsumeWishFulfilled:
+                    pass
+                except ProduceWishFulfilled:
+                    print "WEIRD: ProduceWishFulfilled"
+                    return True
+
+            # Wish wasn't fulfilled.  Put it in the waiting queue
+            self._waiting_producers.append(wish)
+            return False
+
 
     def get(self):
-        cond = threading.Condition(self.__lock)
-        basket = []
+        group = WishGroup()
+        wish = ConsumeWish(group, self)
+        self._submit_consume_wish(wish)
 
-        with self.__lock:
-            self.__waiting_consumers.append((cond, basket))
-            self.__cond.notify()
-            while len(basket) == 0:
-                cond.wait()
+        with group.lock:
+            while not wish.fulfilled:
+                group.cond.wait()
 
-        return basket[0]
+            return wish.value
 
     def put(self, value):
-        with self.__lock:
-            while not self.__waiting_consumers:
-                self.__cond.wait()
+        group = WishGroup()
+        wish = ProduceWish(group, self, value)
+        self._submit_produce_wish(wish)
 
-            cond, basket = self.__waiting_consumers.pop(0)
+        with group.lock:
+            while not wish.fulfilled:
+                group.cond.wait()
 
-            basket.append(value)
-            cond.notify()
 
-def chanselect(listen, speak, closed):
-    pass
+def chanselect(consumers, producers):
+    class Fulfilled(Exception): pass
+
+    group = WishGroup()
+
+    try:
+        # Submits the consumer wishes
+        for chan in consumers:
+            wish = ConsumeWish(group, chan)
+            if chan._submit_consume_wish(wish):
+                raise Fulfilled()
+
+        # Submits the producer wishes
+        for chan, value in producers:
+            wish = ProduceWish(group, chan, value)
+            if chan._submit_produce_wish(wish):
+                raise Fulfilled()
+
+    except Fulfilled:
+        pass
+
+    with group.lock:
+        while not group.fulfilled:
+            group.cond.wait()
+
+        # At this point, a wish has been fulfilled
+        wish = group.fulfilled_by
+        if isinstance(wish, ConsumeWish):
+            return wish.chan, wish.value
+        else:
+            return wish.chan, None
+
 
 def go(fn, *args, **kwargs):
     th = threading.Thread(
@@ -85,22 +212,25 @@ def athlete(chan, phrase, delay=1.0):
     chan.put(phrase)
 
 def printfirst(a, b):
-    heard, _, _ = chanselect([a, b], [], [])
-    chan, value = heard
+    chan, value = chanselect([a, b], [])
     if chan == a:
-        print "From A:", heard
+        print "From A:", value
     elif chan == b:
-        print "From B:", heard
+        print "From B:", value
     else:
         raise WTF()
 
 
-a = Chan()
-b = Chan()
-go(printfirst, a, b)
-go(athlete, a, "AA", delay=0.8)
-go(athlete, b, "BB", delay=0.7)
-time.sleep(2)
+def example_select():
+    a = Chan()
+    b = Chan()
+    go(printfirst, a, b)
+    go(athlete, a, "AA", delay=0.8)
+    go(athlete, b, "BB", delay=0.7)
+    time.sleep(2)
+
+#example_basic()
+example_select()
 
 '''
 Goal
