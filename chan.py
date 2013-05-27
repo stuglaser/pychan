@@ -79,6 +79,11 @@ class Chan(object):
         self._waiting_consumers = []
 
     def _submit_consume_wish(self, wish):
+        """
+        Submits a ConsumeWish for processing by the channel.
+
+        Returns True if the wish was fulfilled while the function exceuted.
+        """
         with self._lock:
             while self._waiting_producers:
                 try:
@@ -89,7 +94,6 @@ class Chan(object):
                     # This produce wish was already fulfilled.  Skip to next
                     pass
                 except ConsumeWishFulfilled:
-                    print "WEIRD: ConsumeWishFulfilled"
                     return True
 
             # Wish wasn't fulfilled.  Put it in the waiting queue
@@ -97,6 +101,11 @@ class Chan(object):
             return False
 
     def _submit_produce_wish(self, wish):
+        """
+        Submits a ProduceWish for processing by the channel.
+
+        Returns True if the wish was fulfilled while the function exceuted.
+        """
         with self._lock:
             while self._waiting_consumers:
                 try:
@@ -104,9 +113,9 @@ class Chan(object):
                     _fulfill_wish_pair(wish, consume_wish)
                     return True  # Fulfilled successfully
                 except ConsumeWishFulfilled:
+                    # This consume wish was already fulfilled.  Skip to next
                     pass
                 except ProduceWishFulfilled:
-                    print "WEIRD: ProduceWishFulfilled"
                     return True
 
             # Wish wasn't fulfilled.  Put it in the waiting queue
@@ -136,6 +145,22 @@ class Chan(object):
 
 
 def chanselect(consumers, producers):
+    """Returns when exactly one consume or produce operation succeeds.
+
+    When this function returns, either one value has been pulled from the
+    channels in `consumers`, or one value has been pushed onto a channel in
+    `producers`.
+
+    Args:
+      consumers: A list of Chan objects to consume from.
+      producers: A list of (Chan, value), containing a channel and a value to
+        put into the channel.
+
+    Returns:
+      Chan, value - If a consume channel is first
+      Chan, None - If a produce channel is first
+
+    """
     class Fulfilled(Exception): pass
 
     group = WishGroup()
@@ -168,7 +193,11 @@ def chanselect(consumers, producers):
             return wish.chan, None
 
 
-def go(fn, *args, **kwargs):
+import random
+import unittest
+
+
+def quickthread(fn, *args, **kwargs):
     th = threading.Thread(
         target=fn,
         args=args,
@@ -177,60 +206,64 @@ def go(fn, *args, **kwargs):
     th.start()
     return th
 
-def printer(phrase, delay):
-    while True:
-        print phrase
+def sayset(chan, phrases, delay=0.5):
+    for ph in phrases:
+        chan.put(ph)
         time.sleep(delay)
 
-def say(chan, phrase, delay=0.5):
-    n = 0
+def distributer(inchans, outchans, delay_max=0.5):
     while True:
-        tosay = "%s(%d)" % (phrase, n)
-        print "Saying", tosay
-        chan.put(tosay)
-        n += 1
-        time.sleep(delay)
+        _, value = chanselect(inchans, [])
+        time.sleep(random.random() * delay_max)
+        _, _ = chanselect([], [(chan, value) for chan in outchans])
 
-def listen(chan, prefix="Heard: "):
+def accumulator(chan, into):
     while True:
+        value = chan.get()
+        into.append(value)
+
+
+class ChanTests(unittest.TestCase):
+    def test_simple(self):
+        chan = Chan()
+        results = []
+        quickthread(accumulator, chan, results)
+
+        chan.put("Hello")
+        time.sleep(0.01)  # Technically unsafe
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0], "Hello")
+
+    def test_nothing_lost(self):
+        phrases = ['Hello_%03d' % x for x in xrange(1000)]
+        firstchan = Chan()
+        chan_layer1 = [Chan() for i in xrange(6)]
+        lastchan = Chan()
+        sayer = quickthread(sayset, firstchan, phrases, delay=0.001)
+
+        # Distribute firstchan -> chan_layer1
+        for i in xrange(12):
+            outchans = [chan_layer1[(i+j)%len(chan_layer1)] for j in xrange(3)]
+            quickthread(distributer, [firstchan], outchans, delay_max=0.005)
+
+        # Distribute chan_layer1 -> lastchan
+        for i in xrange(12):
+            inchans = [chan_layer1[(i+j)%len(chan_layer1)]
+                       for j in xrange(0, 9, 3)]
+            quickthread(distributer, inchans, [lastchan], delay_max=0.005)
+
+        results = []
+        quickthread(accumulator, lastchan, results)
+
+        sayer.join()
         time.sleep(1)
-        phrase = chan.get()
-        print "%s%s" % (prefix, phrase)
 
-def example_basic():
-    c = Chan()
-    go(say, c, "Hello")
-    go(listen, c)
-    go(say, c, "Woah")
-    go(listen, c, "Also heard: ")
+        # Checks that none are missing, and there are no duplicates.
+        self.assertEqual(len(results), len(phrases))
+        self.assertEqual(set(results), set(phrases))
 
-    time.sleep(5)
-
-
-def athlete(chan, phrase, delay=1.0):
-    time.sleep(delay)
-    chan.put(phrase)
-
-def printfirst(a, b):
-    chan, value = chanselect([a, b], [])
-    if chan == a:
-        print "From A:", value
-    elif chan == b:
-        print "From B:", value
-    else:
-        raise WTF()
-
-
-def example_select():
-    a = Chan()
-    b = Chan()
-    go(printfirst, a, b)
-    go(athlete, a, "AA", delay=0.8)
-    go(athlete, b, "BB", delay=0.7)
-    time.sleep(2)
-
-#example_basic()
-example_select()
+unittest.main()
 
 '''
 Goal
