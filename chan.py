@@ -3,6 +3,7 @@ import collections
 import threading
 import time
 
+
 class WTF(Exception):
     def __init__(self):
         super(WTF, self).__init__("WTF")
@@ -52,9 +53,16 @@ class ConsumeWish(object):
         self.group.cond.notify()
 
 
-class WishFulfilled(Exception): pass
-class ProduceWishFulfilled(WishFulfilled): pass
-class ConsumeWishFulfilled(WishFulfilled): pass
+class WishFulfilled(Exception):
+    pass
+
+
+class ProduceWishFulfilled(WishFulfilled):
+    pass
+
+
+class ConsumeWishFulfilled(WishFulfilled):
+    pass
 
 
 def _fulfill_wish_pair(produce_wish, consume_wish):
@@ -122,7 +130,6 @@ class Chan(object):
             self._waiting_producers.append(wish)
             return False
 
-
     def get(self):
         group = WishGroup()
         wish = ConsumeWish(group, self)
@@ -161,7 +168,8 @@ def chanselect(consumers, producers):
       Chan, None - If a produce channel is first
 
     """
-    class Fulfilled(Exception): pass
+    class Fulfilled(Exception):
+        pass
 
     group = WishGroup()
 
@@ -206,16 +214,19 @@ def quickthread(fn, *args, **kwargs):
     th.start()
     return th
 
+
 def sayset(chan, phrases, delay=0.5):
     for ph in phrases:
         chan.put(ph)
         time.sleep(delay)
+
 
 def distributer(inchans, outchans, delay_max=0.5):
     while True:
         _, value = chanselect(inchans, [])
         time.sleep(random.random() * delay_max)
         _, _ = chanselect([], [(chan, value) for chan in outchans])
+
 
 def accumulator(chan, into):
     while True:
@@ -244,12 +255,13 @@ class ChanTests(unittest.TestCase):
 
         # Distribute firstchan -> chan_layer1
         for i in xrange(12):
-            outchans = [chan_layer1[(i+j)%len(chan_layer1)] for j in xrange(3)]
+            outchans = [chan_layer1[(i+j) % len(chan_layer1)]
+                        for j in xrange(3)]
             quickthread(distributer, [firstchan], outchans, delay_max=0.005)
 
         # Distribute chan_layer1 -> lastchan
         for i in xrange(12):
-            inchans = [chan_layer1[(i+j)%len(chan_layer1)]
+            inchans = [chan_layer1[(i+j) % len(chan_layer1)]
                        for j in xrange(0, 9, 3)]
             quickthread(distributer, inchans, [lastchan], delay_max=0.005)
 
@@ -263,27 +275,5 @@ class ChanTests(unittest.TestCase):
         self.assertEqual(len(results), len(phrases))
         self.assertEqual(set(results), set(phrases))
 
-unittest.main()
-
-'''
-Goal
-
-a = Chan()
-b = Chan()
-c = Chan()
-d = Chan()
-
-c.put(4)
-c.get()
-c.close()
-
-getready, putready, closed = \
-    chanselect(get=[a, b], put=[(c, 'cat'), (d, 'dog')], closed=[e, f])
-
-getready: [], [(a, 'hi')], or [(a, 'hi'), (b, 'bye')]
-
-putready: [], [c], [c, d]
-
-closed: [], [e], [e, f]
-
-'''
+if __name__ == '__main__':
+    unittest.main()
