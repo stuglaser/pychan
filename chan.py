@@ -1,7 +1,20 @@
 #!/usr/bin/env python
 import collections
+import contextlib
+import random
 import threading
 import time
+
+
+@contextlib.contextmanager
+def all_locked(locks):
+    try:
+        for l in locks:
+            l.acquire()
+        yield
+    finally:
+        for l in locks:
+            l.release()
 
 
 class WTF(Exception):
@@ -9,86 +22,55 @@ class WTF(Exception):
         super(WTF, self).__init__("WTF")
 
 
+class Empty(Exception):
+    pass
+
+class Full(Exception):
+    pass
+
+
 class WishGroup(object):
     def __init__(self):
         self.fulfilled_by = None
         self.lock = threading.Lock()
         self.cond = threading.Condition(self.lock)
-
-        self._produce_wishes = []
-        self._consume_wishes = []
+        self.wishes = []
 
     @property
     def fulfilled(self):
         return self.fulfilled_by is not None
 
-    def cleanup(self):
-        for wish in self._produce_wishes:
-            wish.chan._remove_produce_wish(wish)
-        for wish in self._consume_wishes:
-            wish.chan._remove_consume_wish(wish)
 
+WISH_PRODUCE = 0
+WISH_CONSUME = 1
 
-class ProduceWish(object):
-    def __init__(self, group, chan, value):
+class Wish(object):
+    def __init__(self, group, kind, chan, value=None):
         self.group = group
+        self.kind = kind
         self.chan = chan
         self.value = value
 
-        self.group._produce_wishes.append(self)
+        self.group.wishes.append(self)
+
+    def __repr__(self):
+        return "<Wish %s %r>" % (
+            'p' if self.kind == WISH_PRODUCE else 'c',
+            self.value)
 
     @property
     def fulfilled(self):
         return self.group.fulfilled
 
-    def fulfill(self):
-        """Must hold group.lock"""
+    def fulfill(self, value=None):
+        """group must be locked"""
         self.group.fulfilled_by = self
         self.group.cond.notify()
-        return self.value
-
-
-class ConsumeWish(object):
-    def __init__(self, group, chan):
-        self.group = group
-        self.chan = chan
-
-        self.group._consume_wishes.append(self)
-
-    @property
-    def fulfilled(self):
-        return self.group.fulfilled
-
-    def fulfill(self, value):
-        """Must hold group.lock"""
-        self.value = value
-        self.group.fulfilled_by = self
-        self.group.cond.notify()
-
-
-class WishFulfilled(Exception):
-    pass
-
-
-class ProduceWishFulfilled(WishFulfilled):
-    pass
-
-
-class ConsumeWishFulfilled(WishFulfilled):
-    pass
-
-
-def _fulfill_wish_pair(produce_wish, consume_wish):
-    if produce_wish.group == consume_wish.group:
-        raise WTF()
-        # Always lock producer, then consumer
-    with produce_wish.group.lock, consume_wish.group.lock:
-        if produce_wish.fulfilled:
-            raise ProduceWishFulfilled()
-        if consume_wish.fulfilled:
-            raise ConsumeWishFulfilled()
-
-        consume_wish.fulfill(produce_wish.fulfill())
+        if self.kind == WISH_PRODUCE:
+            return self.value
+        else:
+            self.value = value
+            return
 
 
 class Chan(object):
@@ -99,86 +81,71 @@ class Chan(object):
         self._waiting_producers = []
         self._waiting_consumers = []
 
-    def _submit_consume_wish(self, wish):
+    def __repr__(self):
+        return "<Chan 0x%x>" % id(self)
+
+    def _get_nowait(self):
         """
-        Submits a ConsumeWish for processing by the channel.
+        Returns a value from a waiting producer, or raises Empty
 
-        Returns True if the wish was fulfilled while the function exceuted.
+        Assumes that the Chan is locked.
         """
-        with self._lock:
-            while self._waiting_producers:
-                try:
-                    produce_wish = self._waiting_producers.pop(0)
-                    _fulfill_wish_pair(produce_wish, wish)
-                    return True  # Fulfilled successfully
-                except ProduceWishFulfilled:
-                    # This produce wish was already fulfilled.  Skip to next
-                    pass
-                except ConsumeWishFulfilled:
-                    return True
+        while True:
+            if self._waiting_producers:
+                produce_wish = self._waiting_producers.pop(0)
+                with produce_wish.group.lock:
+                    if not produce_wish.group.fulfilled:
+                        return produce_wish.fulfill()
+            else:
+                raise Empty()
 
-            # Wish wasn't fulfilled.  Put it in the waiting queue
-            self._waiting_consumers.append(wish)
-            return False
-
-    def _remove_consume_wish(self, wish):
-        with self._lock:
-            try:
-                self._waiting_consumers.remove(wish)
-            except ValueError:
-                pass  # Already removed
-
-    def _submit_produce_wish(self, wish):
+    def _put_nowait(self, value):
         """
-        Submits a ProduceWish for processing by the channel.
+        Gives value to a waiting consumer, or raises Full
 
-        Returns True if the wish was fulfilled while the function exceuted.
+        Assumes that the Chan is locked.
         """
-        with self._lock:
-            while self._waiting_consumers:
-                try:
-                    consume_wish = self._waiting_consumers.pop(0)
-                    _fulfill_wish_pair(wish, consume_wish)
-                    return True  # Fulfilled successfully
-                except ConsumeWishFulfilled:
-                    # This consume wish was already fulfilled.  Skip to next
-                    pass
-                except ProduceWishFulfilled:
-                    return True
-
-            # Wish wasn't fulfilled.  Put it in the waiting queue
-            self._waiting_producers.append(wish)
-            return False
-
-    def _remove_produce_wish(self, wish):
-        with self._lock:
-            try:
-                self._waiting_producers.remove(wish)
-            except ValueError:
-                pass  # Already removed
+        while True:
+            if self._waiting_consumers:
+                consume_wish = self._waiting_consumers.pop(0)
+                with consume_wish.group.lock:
+                    if not consume_wish.group.fulfilled:
+                        consume_wish.fulfill(value)
+                        return
+            else:
+                raise Full()
 
     def get(self):
-        group = WishGroup()
-        wish = ConsumeWish(group, self)
-        self._submit_consume_wish(wish)
+        with self._lock:
+            try:
+                return self._get_nowait()
+            except Empty:
+                pass
+            group = WishGroup()
+            wish = Wish(group, WISH_CONSUME, self)
+            self._waiting_consumers.append(wish)
 
         with group.lock:
-            while not wish.fulfilled:
+            while not group.fulfilled:
                 group.cond.wait()
-        group.cleanup()
 
         return wish.value
 
     def put(self, value):
-        group = WishGroup()
-        wish = ProduceWish(group, self, value)
-        self._submit_produce_wish(wish)
+        with self._lock:
+            try:
+                self._put_nowait(value)
+                return
+            except Full:
+                pass
+
+            group = WishGroup()
+            wish = Wish(group, WISH_PRODUCE, self, value)
+            self._waiting_producers.append(wish)
 
         with group.lock:
-            while not wish.fulfilled:
+            while not group.fulfilled:
                 group.cond.wait()
-
-        group.cleanup()
 
 
 def chanselect(consumers, producers):
@@ -198,37 +165,62 @@ def chanselect(consumers, producers):
       Chan, None - If a produce channel is first
 
     """
-    class Fulfilled(Exception):
-        pass
-
     group = WishGroup()
+    for chan in consumers:
+        Wish(group, WISH_CONSUME, chan)
+    for chan, value in producers:
+        Wish(group, WISH_PRODUCE, chan, value)
 
-    try:
-        # Submits the consumer wishes
-        for chan in consumers:
-            wish = ConsumeWish(group, chan)
-            if chan._submit_consume_wish(wish):
-                raise Fulfilled()
+    # Makes all cases fair
+    random.shuffle(group.wishes)
 
-        # Submits the producer wishes
-        for chan, value in producers:
-            wish = ProduceWish(group, chan, value)
-            if chan._submit_produce_wish(wish):
-                raise Fulfilled()
-    except Fulfilled:
-        pass
+    chan_locks_ordered = list(set(wish.chan._lock for wish in group.wishes))
+    chan_locks_ordered.sort()
 
+    with all_locked(chan_locks_ordered):
+        # Checks for blocked threads that we can satisfy
+        for wish in group.wishes:
+            if wish.kind == WISH_CONSUME:
+                try:
+                    value = wish.chan._get_nowait()
+                    return wish.chan, value
+                except Empty:
+                    pass
+            else:  # PRODUCE
+                try:
+                    wish.chan._put_nowait(wish.value)
+                    return wish.chan, None
+                except Full:
+                    pass
+
+        # Enqueues wishes, to wait for fulfillment
+        for wish in group.wishes:
+            if wish.kind == WISH_CONSUME:
+                wish.chan._waiting_consumers.append(wish)
+            else:
+                wish.chan._waiting_producers.append(wish)
+
+    # Waits for the wish to be fulfilled
     with group.lock:
         while not group.fulfilled:
             group.cond.wait()
 
-        # At this point, a wish has been fulfilled
-        wish = group.fulfilled_by
-    group.cleanup()
-    if isinstance(wish, ConsumeWish):
-        return wish.chan, wish.value
-    else:
-        return wish.chan, None
+    # Removes the wishes from waiting queues
+    with all_locked(chan_locks_ordered):
+        for wish in group.wishes:
+            if wish.kind == WISH_CONSUME:
+                try:
+                    wish.chan._waiting_consumers.remove(wish)
+                except ValueError:
+                    pass
+            else:
+                try:
+                    wish.chan._waiting_producers.remove(wish)
+                except ValueError:
+                    pass
+
+    wish = group.fulfilled_by
+    return wish.chan, wish.value
 
 
 import random
@@ -236,7 +228,9 @@ import unittest
 
 
 def quickthread(fn, *args, **kwargs):
+    name = kwargs.pop('__name', None)
     th = threading.Thread(
+        name=name,
         target=fn,
         args=args,
         kwargs=kwargs)
@@ -281,23 +275,25 @@ class ChanTests(unittest.TestCase):
         firstchan = Chan()
         chan_layer1 = [Chan() for i in xrange(6)]
         lastchan = Chan()
-        sayer = quickthread(sayset, firstchan, phrases, delay=0.001)
+        sayer = quickthread(sayset, firstchan, phrases, delay=0.001,
+                            __name='sayer')
 
         # Distribute firstchan -> chan_layer1
         for i in xrange(12):
             outchans = [chan_layer1[(i+j) % len(chan_layer1)]
                         for j in xrange(3)]
-            quickthread(distributer, [firstchan], outchans, delay_max=0.005)
+            quickthread(distributer, [firstchan], outchans, delay_max=0.005,
+                        __name='dist_layer1_%02d' % i)
 
         # Distribute chan_layer1 -> lastchan
         for i in xrange(12):
             inchans = [chan_layer1[(i+j) % len(chan_layer1)]
                        for j in xrange(0, 9, 3)]
-            quickthread(distributer, inchans, [lastchan], delay_max=0.005)
+            quickthread(distributer, inchans, [lastchan], delay_max=0.005,
+                        __name='dist_layer2_%02d' % i)
 
         results = []
-        quickthread(accumulator, lastchan, results)
-
+        quickthread(accumulator, lastchan, results, __name='accumulator')
         sayer.join()
         time.sleep(1)
 
