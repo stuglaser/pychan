@@ -15,9 +15,18 @@ class WishGroup(object):
         self.lock = threading.Lock()
         self.cond = threading.Condition(self.lock)
 
+        self._produce_wishes = []
+        self._consume_wishes = []
+
     @property
     def fulfilled(self):
         return self.fulfilled_by is not None
+
+    def cleanup(self):
+        for wish in self._produce_wishes:
+            wish.chan._remove_produce_wish(wish)
+        for wish in self._consume_wishes:
+            wish.chan._remove_consume_wish(wish)
 
 
 class ProduceWish(object):
@@ -25,6 +34,8 @@ class ProduceWish(object):
         self.group = group
         self.chan = chan
         self.value = value
+
+        self.group._produce_wishes.append(self)
 
     @property
     def fulfilled(self):
@@ -41,6 +52,8 @@ class ConsumeWish(object):
     def __init__(self, group, chan):
         self.group = group
         self.chan = chan
+
+        self.group._consume_wishes.append(self)
 
     @property
     def fulfilled(self):
@@ -108,6 +121,13 @@ class Chan(object):
             self._waiting_consumers.append(wish)
             return False
 
+    def _remove_consume_wish(self, wish):
+        with self._lock:
+            try:
+                self._waiting_consumers.remove(wish)
+            except ValueError:
+                pass  # Already removed
+
     def _submit_produce_wish(self, wish):
         """
         Submits a ProduceWish for processing by the channel.
@@ -130,6 +150,13 @@ class Chan(object):
             self._waiting_producers.append(wish)
             return False
 
+    def _remove_produce_wish(self, wish):
+        with self._lock:
+            try:
+                self._waiting_producers.remove(wish)
+            except ValueError:
+                pass  # Already removed
+
     def get(self):
         group = WishGroup()
         wish = ConsumeWish(group, self)
@@ -138,8 +165,9 @@ class Chan(object):
         with group.lock:
             while not wish.fulfilled:
                 group.cond.wait()
+        group.cleanup()
 
-            return wish.value
+        return wish.value
 
     def put(self, value):
         group = WishGroup()
@@ -149,6 +177,8 @@ class Chan(object):
         with group.lock:
             while not wish.fulfilled:
                 group.cond.wait()
+
+        group.cleanup()
 
 
 def chanselect(consumers, producers):
@@ -185,7 +215,6 @@ def chanselect(consumers, producers):
             wish = ProduceWish(group, chan, value)
             if chan._submit_produce_wish(wish):
                 raise Fulfilled()
-
     except Fulfilled:
         pass
 
@@ -195,10 +224,11 @@ def chanselect(consumers, producers):
 
         # At this point, a wish has been fulfilled
         wish = group.fulfilled_by
-        if isinstance(wish, ConsumeWish):
-            return wish.chan, wish.value
-        else:
-            return wish.chan, None
+    group.cleanup()
+    if isinstance(wish, ConsumeWish):
+        return wish.chan, wish.value
+    else:
+        return wish.chan, None
 
 
 import random
