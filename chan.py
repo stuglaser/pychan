@@ -20,6 +20,7 @@ def all_locked(locks):
 class Empty(Exception):
     pass
 
+
 class Full(Exception):
     pass
 
@@ -38,6 +39,7 @@ class WishGroup(object):
 
 WISH_PRODUCE = 0
 WISH_CONSUME = 1
+
 
 class Wish(object):
     def __init__(self, group, kind, chan, value=None):
