@@ -17,11 +17,6 @@ def all_locked(locks):
             l.release()
 
 
-class WTF(Exception):
-    def __init__(self):
-        super(WTF, self).__init__("WTF")
-
-
 class Empty(Exception):
     pass
 
@@ -50,6 +45,7 @@ class Wish(object):
         self.kind = kind
         self.chan = chan
         self.value = value
+        self.closed = False
 
         self.group.wishes.append(self)
 
@@ -62,8 +58,10 @@ class Wish(object):
     def fulfilled(self):
         return self.group.fulfilled
 
-    def fulfill(self, value=None):
+    def fulfill(self, value=None, closed=False):
         """group must be locked"""
+        assert not self.fulfilled
+        self.closed = closed
         self.group.fulfilled_by = self
         self.group.cond.notify()
         if self.kind == WISH_PRODUCE:
@@ -73,9 +71,16 @@ class Wish(object):
             return
 
 
+class ChanClosed(Exception):
+    def __init__(self, *args, **kwargs):
+        self.which = kwargs.pop('which')
+        super(ChanClosed, self).__init__(*args, **kwargs)
+
+
 class Chan(object):
     def __init__(self):
         self._lock = threading.Lock()
+        self._closed = False
 
         # TODO: Lists are inefficient lifo queues
         self._waiting_producers = []
@@ -121,6 +126,10 @@ class Chan(object):
                 return self._get_nowait()
             except Empty:
                 pass
+
+            if self._closed:
+                raise ChanClosed(which=self)
+
             group = WishGroup()
             wish = Wish(group, WISH_CONSUME, self)
             self._waiting_consumers.append(wish)
@@ -129,10 +138,14 @@ class Chan(object):
             while not group.fulfilled:
                 group.cond.wait()
 
+        if wish.closed:
+            raise ChanClosed(which=self)
         return wish.value
 
     def put(self, value):
         with self._lock:
+            if self._closed:
+                raise ChanClosed(which=self)
             try:
                 self._put_nowait(value)
                 return
@@ -146,6 +159,36 @@ class Chan(object):
         with group.lock:
             while not group.fulfilled:
                 group.cond.wait()
+        if wish.closed:
+            raise ChanClosed(which=self)
+
+    def close(self):
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Channel double-closed")
+            self._closed = True
+
+            # Copies waiting wishes, to be fulfilled when the Chan is unlocked.
+            wishes = self._waiting_producers[:] + self._waiting_consumers[:]
+
+        for wish in wishes:
+            with wish.group.lock:
+                if not wish.fulfilled:
+                    wish.fulfill(closed=True)
+
+    @property
+    def closed(self):
+        with self._lock:
+            return self._closed and not self._waiting_producers
+
+    def __iter__(self):
+        return self
+
+    def next(self):
+        try:
+            return self.get()
+        except ChanClosed:
+            raise StopIteration
 
 
 def chanselect(consumers, producers):
@@ -163,7 +206,7 @@ def chanselect(consumers, producers):
     Returns:
       Chan, value - If a consume channel is first
       Chan, None - If a produce channel is first
-
+      Raises ChanClosed(which=Chan) - If any channel is closed
     """
     group = WishGroup()
     for chan in consumers:
@@ -180,6 +223,9 @@ def chanselect(consumers, producers):
     with all_locked(chan_locks_ordered):
         # Checks for blocked threads that we can satisfy
         for wish in group.wishes:
+            if wish.chan._closed:
+                raise ChanClosed(which=wish.chan)
+
             if wish.kind == WISH_CONSUME:
                 try:
                     value = wish.chan._get_nowait()
@@ -220,11 +266,9 @@ def chanselect(consumers, producers):
                     pass
 
     wish = group.fulfilled_by
+    if wish.closed:
+        raise ChanClosed(which=wish.chan)
     return wish.chan, wish.value
-
-
-import random
-import unittest
 
 
 def quickthread(fn, *args, **kwargs):
@@ -237,69 +281,3 @@ def quickthread(fn, *args, **kwargs):
     th.daemon = True
     th.start()
     return th
-
-
-def sayset(chan, phrases, delay=0.5):
-    for ph in phrases:
-        chan.put(ph)
-        time.sleep(delay)
-
-
-def distributer(inchans, outchans, delay_max=0.5):
-    while True:
-        _, value = chanselect(inchans, [])
-        time.sleep(random.random() * delay_max)
-        _, _ = chanselect([], [(chan, value) for chan in outchans])
-
-
-def accumulator(chan, into):
-    while True:
-        value = chan.get()
-        into.append(value)
-
-
-class ChanTests(unittest.TestCase):
-    def test_simple(self):
-        chan = Chan()
-        results = []
-        quickthread(accumulator, chan, results)
-
-        chan.put("Hello")
-        time.sleep(0.01)  # Technically unsafe
-
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0], "Hello")
-
-    def test_nothing_lost(self):
-        phrases = ['Hello_%03d' % x for x in xrange(1000)]
-        firstchan = Chan()
-        chan_layer1 = [Chan() for i in xrange(6)]
-        lastchan = Chan()
-        sayer = quickthread(sayset, firstchan, phrases, delay=0.001,
-                            __name='sayer')
-
-        # Distribute firstchan -> chan_layer1
-        for i in xrange(12):
-            outchans = [chan_layer1[(i+j) % len(chan_layer1)]
-                        for j in xrange(3)]
-            quickthread(distributer, [firstchan], outchans, delay_max=0.005,
-                        __name='dist_layer1_%02d' % i)
-
-        # Distribute chan_layer1 -> lastchan
-        for i in xrange(12):
-            inchans = [chan_layer1[(i+j) % len(chan_layer1)]
-                       for j in xrange(0, 9, 3)]
-            quickthread(distributer, inchans, [lastchan], delay_max=0.005,
-                        __name='dist_layer2_%02d' % i)
-
-        results = []
-        quickthread(accumulator, lastchan, results, __name='accumulator')
-        sayer.join()
-        time.sleep(1)
-
-        # Checks that none are missing, and there are no duplicates.
-        self.assertEqual(len(results), len(phrases))
-        self.assertEqual(set(results), set(phrases))
-
-if __name__ == '__main__':
-    unittest.main()
