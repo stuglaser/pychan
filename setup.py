@@ -4,6 +4,6 @@ setup(
     name='chan',
     description='Chan for Python',
     author='Stuart Glaser',
-    version='0.1'
+    version='0.1',
     packages=['chan'],
 )
