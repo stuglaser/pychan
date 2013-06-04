@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 import collections
 import contextlib
 import random

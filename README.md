@@ -41,12 +41,14 @@ time.sleep(5)
 
 And you can wait on multiple channels with `chanselect`:
 
-```
+```Python
 def fan_in(outchan, input1, input2):
 	while True:
 		chan, value = chanselect([input1, input2], [])
 		if chan == input1:
-		    c.put("From 1: " + str(value))
+		    outchan.put("From 1: " + str(value))
 		else:
-		    c.put("From 2 " + str(value))
+		    outchan.put("From 2 " + str(value))
 ```
+
+[![Bitdeli Badge](https://d2weczhvl823v0.cloudfront.net/stuglaser/pychan/trend.png)](https://bitdeli.com/free "Bitdeli Badge")
