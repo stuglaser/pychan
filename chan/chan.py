@@ -78,10 +78,53 @@ class ChanClosed(Exception):
         super(ChanClosed, self).__init__(*args, **kwargs)
 
 
+class RingBuffer(object):
+    def __init__(self, buflen):
+        self.buf = [None] * buflen
+        self.next_pop = 0
+        self._len = 0
+
+    @property
+    def cap(self):
+        return len(self.buf)
+
+    def push(self, value):
+        if self._len == len(self.buf):
+            raise IndexError()
+        next_push = (self.next_pop + self._len) % len(self.buf)
+        self.buf[next_push] = value
+        self._len += 1
+
+    def pop(self):
+        if self._len == 0:
+            raise IndexError()
+        value = self.buf[self.next_pop]
+        self.buf[self.next_pop] = None  # Safety
+        self.next_pop = (self.next_pop + 1) % len(self.buf)
+        self._len -= 1
+        return value
+
+    def __len__(self):
+        return self._len
+
+    @property
+    def empty(self):
+        return self._len == 0
+
+    @property
+    def full(self):
+        return self._len == len(self.buf)
+
+
 class Chan(object):
-    def __init__(self):
+    def __init__(self, buflen=0):
         self._lock = threading.Lock()
         self._closed = False
+
+        if buflen > 0:
+            self._buf = RingBuffer(buflen)
+        else:
+            self._buf = None
 
         # TODO: Lists are inefficient lifo queues
         self._waiting_producers = []
@@ -96,14 +139,29 @@ class Chan(object):
 
         Assumes that the Chan is locked.
         """
-        while True:
-            if self._waiting_producers:
-                produce_wish = self._waiting_producers.pop(0)
-                with produce_wish.group.lock:
-                    if not produce_wish.group.fulfilled:
-                        return produce_wish.fulfill()
-            else:
-                raise Empty()
+        # Fulfills a waiting producer, returning its value, or raising Empty if
+        # no fulfillable producers are waiting.
+        def fulfill_waiting_producer():
+            while True:
+                if self._waiting_producers:
+                    produce_wish = self._waiting_producers.pop(0)
+                    with produce_wish.group.lock:
+                        if not produce_wish.group.fulfilled:
+                            return produce_wish.fulfill()
+                else:
+                    raise Empty()
+
+        if self._buf is not None and not self._buf.empty:
+            value = self._buf.pop()
+            try:
+                # Cycles a producer's value onto the buffer
+                produced = fulfill_waiting_producer()
+                self._buf.push(produced)
+            except Empty:
+                pass
+            return value
+        else:
+            return fulfill_waiting_producer()
 
     def _put_nowait(self, value):
         """
@@ -118,6 +176,9 @@ class Chan(object):
                     if not consume_wish.group.fulfilled:
                         consume_wish.fulfill(value)
                         return
+            elif self._buf is not None and not self._buf.full:
+                self._buf.push(value)
+                return
             else:
                 raise Full()
 

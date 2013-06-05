@@ -4,6 +4,7 @@ import time
 import unittest
 
 from chan import Chan, chanselect, ChanClosed, quickthread
+from chan.chan import RingBuffer
 
 
 def sayset(chan, phrases, delay=0.5):
@@ -30,6 +31,27 @@ def accumulator(chan, into=None):
         into = []
     for value in chan:
         into.append(value)
+
+
+class RingBufferTests(unittest.TestCase):
+    def test_pushpop(self):
+        buf = RingBuffer(4)
+        for i in xrange(12):
+            buf.push(i)
+            self.assertEqual(buf.pop(), i)
+
+    def test_fillunfill(self):
+        S = 4
+        buf = RingBuffer(S)
+        for i in xrange(12):
+            for j in xrange(S):
+                buf.push(100 * i + j)
+            for j in xrange(S):
+                self.assertEqual(buf.pop(), 100 * i + j)
+
+            # Moves ahead one space
+            buf.push('NaN')
+            buf.pop()
 
 
 class ChanTests(unittest.TestCase):
@@ -118,6 +140,30 @@ class ChanTests(unittest.TestCase):
         results = set(into)
         self.assertEqual(len(results), 9)
         self.assertEqual(results, set(range(9)))
+
+    def test_buf_simple(self):
+        S = 5
+        c = Chan(S)
+        for i in xrange(S):
+            c.put(i)
+        c.close()
+
+        results = list(c)
+        self.assertEqual(results, range(S))
+
+    def test_buf_overfull(self):
+        c = Chan(5)
+        quickthread(sayset, c, range(20), delay=0)
+        time.sleep(0.1)  # Fill up buffer
+
+        results = list(c)
+        self.assertEqual(results, range(20))
+
+    def test_buf_kept_empty(self):
+        c = Chan(5)
+        quickthread(sayset, c, range(20), delay=0.02)
+        results = list(c)
+        self.assertEqual(results, range(20))
 
 if __name__ == '__main__':
     unittest.main()
