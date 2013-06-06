@@ -2,6 +2,8 @@
 
 Implements Go's chan type in Python.
 
+Install with `pip install chan`
+
 ## Examples
 
 You can `put` onto channels, and `get` from them:
