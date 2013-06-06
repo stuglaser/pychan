@@ -1,45 +1,37 @@
 # Go-style Chan for Python
 
-Implements Go's chan type in Python as `Chan`.  Can `put`/`get`:
+Implements Go's chan type in Python.
+
+## Examples
+
+You can `put` onto channels, and `get` from them:
 
 ```Python
-def babble(ch, what):
-    i = 0
-    while True:
-        ch.put(what + str(i))
-        i += 1
-        time.sleep(1)
-
-def listen(ch):
-    while True:
-        print "Heard:", ch.get()
-
 c = Chan()
-quickthread(babble, c, "hello")
-quickthread(listen, c)
-time.sleep(4)
+
+# Thread 1
+c.put("Hello")
+
+# Thread 2
+print "Heard: %s" % c.get()
 ```
 
-Can use `closed` and iteration:
+Channels can be closed (usually by the sender.
+Iterating over a channel gives all values until the channel is closed:
 
 ```Python
-def sayall(ch, what):
-    for thing in what:
-        ch.put(thing)
-        time.sleep(1)
-    ch.close()
-
-def hearall(ch):
-    for thing in ch:
-        print thing
-
 c = Chan()
-quickthread(sayall, c, ['get', 'off', 'my', 'lawn'])
-quickthread(hearall, c)
-time.sleep(5)
+
+# Thread 1
+for word in ['get', 'off', 'my', 'lawn']:
+    c.put(word)
+
+# Thread 2
+for thing in c:
+    print "Heard:", thing
 ```
 
-And you can wait on multiple channels with `chanselect`:
+You can wait on multiple channels using `chanselect`.  Pass it a list of input channels and another of output channels, and it will return when any of the channels is ready.
 
 ```Python
 def fan_in(outchan, input1, input2):
@@ -50,5 +42,8 @@ def fan_in(outchan, input1, input2):
 		else:
 		    outchan.put("From 2 " + str(value))
 ```
+
+You can see more examples in `pick-conc-patt.py`.
+
 
 [![Bitdeli Badge](https://d2weczhvl823v0.cloudfront.net/stuglaser/pychan/trend.png)](https://bitdeli.com/free "Bitdeli Badge")
