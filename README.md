@@ -4,7 +4,7 @@ Implements Go's chan type in Python.
 
 Install with `pip install chan`
 
-## Examples
+## Usage
 
 You can `put` onto channels, and `get` from them:
 
@@ -25,8 +25,9 @@ Iterating over a channel gives all values until the channel is closed:
 c = Chan()
 
 # Thread 1
-for word in ['get', 'off', 'my', 'lawn']:
-    c.put(word)
+c.put("It's")
+c.put("just")
+c.put("contradiction")
 
 # Thread 2
 for thing in c:
@@ -45,7 +46,7 @@ def fan_in(outchan, input1, input2):
 		    outchan.put("From 2 " + str(value))
 ```
 
-You can see more examples in `pick-conc-patt.py`.
+You can see more examples in the "examples" directory.
 
 
 [![Bitdeli Badge](https://d2weczhvl823v0.cloudfront.net/stuglaser/pychan/trend.png)](https://bitdeli.com/free "Bitdeli Badge")
