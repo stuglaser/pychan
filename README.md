@@ -48,5 +48,4 @@ def fan_in(outchan, input1, input2):
 
 You can see more examples in the "examples" directory.
 
-
-[![Bitdeli Badge](https://d2weczhvl823v0.cloudfront.net/stuglaser/pychan/trend.png)](https://bitdeli.com/free "Bitdeli Badge")
+![a](https://nojsstats.appspot.com/UA-41669691-1/github.com)
