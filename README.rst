@@ -10,7 +10,7 @@ Usage
 
 You can ``put`` onto channels, and ``get`` from them
 
-.. code-block:: Python
+.. code-block:: python
 
     c = Chan()
 
@@ -23,7 +23,7 @@ You can ``put`` onto channels, and ``get`` from them
 Channels can be closed (usually by the sender).
 Iterating over a channel gives all values until the channel is closed
 
-.. code-block:: Python
+.. code-block:: python
 
     c = Chan()
 
@@ -38,7 +38,7 @@ Iterating over a channel gives all values until the channel is closed
 
 You can wait on multiple channels using ``chanselect``.  Pass it a list of input channels and another of output channels, and it will return when any of the channels is ready
 
-.. code-block:: Python
+.. code-block:: python
 
     def fan_in(outchan, input1, input2):
         while True:

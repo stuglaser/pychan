@@ -117,6 +117,15 @@ class RingBuffer(object):
 
 
 class Chan(object):
+    """Chan objects allow multiple threads to communicate.
+
+    :param buflen: Defines the size of the channel's internal buffer, or 0 if
+                   the channel should be unbuffered.  An unbuffered channel
+                   blocks on all put/get's, unless a corresponding get/put is
+                   already waiting, while a buffered channel will accept puts
+                   without blocking as long as the buffer is not full.
+
+    """
     def __init__(self, buflen=0):
         self._lock = threading.Lock()
         self._closed = False
@@ -183,6 +192,16 @@ class Chan(object):
                 raise Full()
 
     def get(self):
+        """Returns an item that was ``put`` onto the channel.
+
+        ``get`` returns immediately if there are items in the channel's buffer
+        or if another thread is blocked on ``put``.  Otherwise, it blocks until
+        another thread puts an item onto this channel.
+
+        :raises: :class:`ChanClosed` If the channel has been closed, the \
+                 buffer is empty, and no threads are waiting on ``put``.
+
+        """
         with self._lock:
             try:
                 return self._get_nowait()
@@ -205,6 +224,20 @@ class Chan(object):
         return wish.value
 
     def put(self, value):
+        """Places an item onto the channel.
+
+        ``put`` returns immediately if the channel's buffer has room, or if
+        another thread is blocked on ``get``.  Otherwise, ``put`` will block
+        until another thread calls ``get``.
+
+        :param value: The value to place on the channel.  It is unwise to
+                      modify ``value`` afterwards, since the other thread will
+                      receive it directly, and not just a copy.  It can be any
+                      type.
+
+        :raises: :class:`ChanClosed` If the channel has already been closed.
+
+        """
         with self._lock:
             if self._closed:
                 raise ChanClosed(which=self)
@@ -225,6 +258,12 @@ class Chan(object):
             raise ChanClosed(which=self)
 
     def close(self):
+        """Closes the channel, allowing no further ``put`` operations.
+
+        Once ``close`` is called, the channel allows in-progress ``put``
+        operations to complete and the buffer to clear, and then 
+
+        """
         with self._lock:
             if self._closed:
                 raise RuntimeError("Channel double-closed")
@@ -240,6 +279,12 @@ class Chan(object):
 
     @property
     def closed(self):
+        """Returns True if the channel is closed.
+
+        It may be better to call ``put`` or ``get`` and handle the
+        :class:`ChanClosed` exception.
+
+        """
         with self._lock:
             return self._closed and not self._waiting_producers
 
@@ -256,19 +301,40 @@ class Chan(object):
 def chanselect(consumers, producers):
     """Returns when exactly one consume or produce operation succeeds.
 
-    When this function returns, either one value has been pulled from the
-    channels in `consumers`, or one value has been pushed onto a channel in
-    `producers`.
+    When this function returns, either a channel is closed, or one value has
+    been pulled from the channels in ``consumers``, or one value has been
+    pushed onto a channel in ``producers``.
 
-    Args:
-      consumers: A list of Chan objects to consume from.
-      producers: A list of (Chan, value), containing a channel and a value to
-        put into the channel.
+    ``chanselect`` returns different values depending on which channel was
+    ready first:
 
-    Returns:
-      Chan, value - If a consume channel is first
-      Chan, None - If a produce channel is first
-      Raises ChanClosed(which=Chan) - If any channel is closed
+    - (:class:`Chan`, value) -- If a consume channel is first.
+    - (:class:`Chan`, None) -- If a produce channel is first
+    - Raises :class:`ChanClosed`\ ``(which=Chan)`` - If any channel is closed
+
+    :param consumers: A list of :class:`Chan` objects to consume from.
+    :param producers: A list of (:class:`Chan`, value), containing a channel
+                      and a value to put into the channel.
+
+    Here's a quick example.  Let's say we're waiting to receive on channels
+    ``chan_a`` and ``chan_b``, and waiting to send on channels ``chan_c`` and
+    ``chan_d``.  The call to ``chanselect`` looks something like this:
+
+    .. code-block:: python
+
+        ch, value = chanselect([chan_a, chan_b],
+                               [(chan_c, 'C'), (chan_d, 'D')])
+        if ch == chan_a:
+            print("Got {} from A".format(value))
+        elif ch == chan_b:
+            print("Got {} from B".format(value))
+        elif ch == chan_c:
+            print("Sent on C")
+        elif ch == chan_d:
+            print("Sent on D")
+        else:
+            raise RuntimeError("Can't get here")
+
     """
     group = WishGroup()
     for chan in consumers:

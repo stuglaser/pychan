@@ -3,12 +3,14 @@ from setuptools import setup
 
 DIR = os.path.dirname(__file__)
 
-with open(os.path.join(DIR, 'README.md')) as f:
+with open(os.path.join(DIR, 'README.rst')) as f:
     README = f.read()
+
+import chan
 
 setup(
     name='chan',
-    version='0.2.0',
+    version=chan.__version__,
     description="Chan for Python, lovingly stolen from Go",
     author='Stuart Glaser',
     author_email='stuglaser@gmail.com',
