@@ -3,7 +3,8 @@ import threading
 import time
 import unittest
 
-from chan import Chan, chanselect, ChanClosed, quickthread
+from chan import Chan, chanselect, quickthread
+from chan import ChanClosed, Timeout
 from chan.chan import RingBuffer
 
 
@@ -112,6 +113,25 @@ class ChanTests(unittest.TestCase):
 
         time.sleep(0.1)
         self.assertFalse(t.is_alive())
+
+    def test_putget_timeout(self):
+        c = Chan()
+        self.assertRaises(Timeout, c.put, 'x', timeout=0)
+        self.assertRaises(Timeout, c.put, 'x', timeout=0.01)
+        self.assertRaises(Timeout, c.get, timeout=0)
+        self.assertRaises(Timeout, c.get, timeout=0.01)
+        self.assertRaises(Timeout, c.put, 'x', timeout=0)
+
+    def test_chanselect_timeout(self):
+        a = Chan()
+        b = Chan()
+        c = Chan()
+        self.assertRaises(Timeout, chanselect, [a, b], [(c, 42)], timeout=0)
+        self.assertRaises(Timeout, chanselect, [a, b], [(c, 42)], timeout=0.01)
+
+        # Verifies that chanselect didn't leave any wishes lying around.
+        self.assertRaises(Timeout, a.put, 12, timeout=0)
+        self.assertRaises(Timeout, c.get, timeout=0)
 
     def test_select_and_closed(self):
         a, b, c = [Chan() for _ in xrange(3)]

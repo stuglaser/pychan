@@ -5,6 +5,8 @@ Implements Go's chan type in Python.
 
 Install with ``pip install chan``
 
+Source at http://github.com/stuglaser/pychan
+
 Usage
 -----
 

@@ -5,6 +5,25 @@ import threading
 import time
 
 
+class Error(Exception):
+    """Base exception class for ``chan``.
+
+    Just inherits from :class:`Exception`
+    """
+    pass
+
+
+class ChanClosed(Error):
+    def __init__(self, *args, **kwargs):
+        self.which = kwargs.pop('which')
+        super(ChanClosed, self).__init__(*args, **kwargs)
+
+
+class Timeout(Error):
+    """Raised when an operation times out."""
+    pass
+
+
 @contextlib.contextmanager
 def all_locked(locks):
     try:
@@ -70,12 +89,6 @@ class Wish(object):
         else:
             self.value = value
             return
-
-
-class ChanClosed(Exception):
-    def __init__(self, *args, **kwargs):
-        self.which = kwargs.pop('which')
-        super(ChanClosed, self).__init__(*args, **kwargs)
 
 
 class RingBuffer(object):
@@ -191,17 +204,25 @@ class Chan(object):
             else:
                 raise Full()
 
-    def get(self):
+    def get(self, timeout=None):
         """Returns an item that was ``put`` onto the channel.
 
         ``get`` returns immediately if there are items in the channel's buffer
         or if another thread is blocked on ``put``.  Otherwise, it blocks until
         another thread puts an item onto this channel.
 
+        :param timeout: An optional floating point number representing the
+                        maximum amount of time to block, in seconds.  If the
+                        timeout expires, then a :class:`Timeout` error is
+                        raised.
+
         :raises: :class:`ChanClosed` If the channel has been closed, the \
                  buffer is empty, and no threads are waiting on ``put``.
 
         """
+        if timeout is not None:
+            timeout_deadline = time.time() + timeout
+
         with self._lock:
             try:
                 return self._get_nowait()
@@ -211,19 +232,32 @@ class Chan(object):
             if self._closed:
                 raise ChanClosed(which=self)
 
+            # Shortcut for if the operation shouldn't block.
+            if timeout is not None and timeout <= 0:
+                raise Timeout()
+
             group = WishGroup()
             wish = Wish(group, WISH_CONSUME, self)
             self._waiting_consumers.append(wish)
 
         with group.lock:
             while not group.fulfilled:
-                group.cond.wait()
+                if timeout is None:
+                    group.cond.wait()
+                else:
+                    group.cond.wait(timeout_deadline - time.time())
+
+                    if time.time() >= timeout_deadline:
+                        # Only time out if the wish wasn't fulfilled
+                        if not group.fulfilled:
+                            self._waiting_consumers.remove(wish)
+                            raise Timeout()
 
         if wish.closed:
             raise ChanClosed(which=self)
         return wish.value
 
-    def put(self, value):
+    def put(self, value, timeout=None):
         """Places an item onto the channel.
 
         ``put`` returns immediately if the channel's buffer has room, or if
@@ -235,9 +269,17 @@ class Chan(object):
                       receive it directly, and not just a copy.  It can be any
                       type.
 
+        :param timeout: An optional floating point number representing the
+                        maximum amount of time to block, in seconds.  If the
+                        timeout expires, then a :class:`Timeout` error is
+                        raised.
+
         :raises: :class:`ChanClosed` If the channel has already been closed.
 
         """
+        if timeout is not None:
+            timeout_deadline = time.time() + timeout
+
         with self._lock:
             if self._closed:
                 raise ChanClosed(which=self)
@@ -247,13 +289,27 @@ class Chan(object):
             except Full:
                 pass
 
+            # Shortcut for if the operation shouldn't block.
+            if timeout is not None and timeout <= 0:
+                raise Timeout()
+
             group = WishGroup()
             wish = Wish(group, WISH_PRODUCE, self, value)
             self._waiting_producers.append(wish)
 
         with group.lock:
             while not group.fulfilled:
-                group.cond.wait()
+                if timeout is None:
+                    group.cond.wait()
+                else:
+                    group.cond.wait(timeout_deadline - time.time())
+
+                    if time.time() >= timeout_deadline:
+                        # Only time out if the wish wasn't fulfilled
+                        if not group.fulfilled:
+                            self._waiting_producers.remove(wish)
+                            raise Timeout()
+
         if wish.closed:
             raise ChanClosed(which=self)
 
@@ -298,7 +354,7 @@ class Chan(object):
             raise StopIteration
 
 
-def chanselect(consumers, producers):
+def chanselect(consumers, producers, timeout=None):
     """Returns when exactly one consume or produce operation succeeds.
 
     When this function returns, either a channel is closed, or one value has
@@ -315,6 +371,10 @@ def chanselect(consumers, producers):
     :param consumers: A list of :class:`Chan` objects to consume from.
     :param producers: A list of (:class:`Chan`, value), containing a channel
                       and a value to put into the channel.
+
+    :param timeout: An optional floating point number specifying the maximum
+                    amount of time to block.  If no channel is ready by this
+                    time, then a :class:`Timeout` error is raised.
 
     Here's a quick example.  Let's say we're waiting to receive on channels
     ``chan_a`` and ``chan_b``, and waiting to send on channels ``chan_c`` and
@@ -336,6 +396,9 @@ def chanselect(consumers, producers):
             raise RuntimeError("Can't get here")
 
     """
+    if timeout is not None:
+        timeout_deadline = time.time() + timeout
+
     group = WishGroup()
     for chan in consumers:
         Wish(group, WISH_CONSUME, chan)
@@ -367,6 +430,11 @@ def chanselect(consumers, producers):
                 except Full:
                     pass
 
+        # If chanselect shouldn't block, then we can exit here, and shortcut
+        # adding wishes to other channels.
+        if timeout is not None and timeout <= 0:
+            raise Timeout()
+
         # Enqueues wishes, to wait for fulfillment
         for wish in group.wishes:
             if wish.kind == WISH_CONSUME:
@@ -377,7 +445,12 @@ def chanselect(consumers, producers):
     # Waits for the wish to be fulfilled
     with group.lock:
         while not group.fulfilled:
-            group.cond.wait()
+            if timeout is None:
+                group.cond.wait()
+            else:
+                group.cond.wait(timeout_deadline - time.time())
+                if time.time() >= timeout_deadline:
+                    break
 
     # Removes the wishes from waiting queues
     with all_locked(chan_locks_ordered):
@@ -393,7 +466,13 @@ def chanselect(consumers, producers):
                 except ValueError:
                     pass
 
+    # Even if the blocking wait timed out, it's possible for wish to get
+    # fulfilled before getting removed from a Chan's waiting queue.  No big
+    # deal.  We'll just pretend that the wish was fulfilled before the timeout.
+
     wish = group.fulfilled_by
+    if wish is None:
+        raise Timeout()
     if wish.closed:
         raise ChanClosed(which=wish.chan)
     return wish.chan, wish.value
