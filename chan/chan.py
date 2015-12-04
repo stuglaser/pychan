@@ -1,4 +1,3 @@
-import collections
 import contextlib
 import random
 import threading
@@ -317,7 +316,7 @@ class Chan(object):
         """Closes the channel, allowing no further ``put`` operations.
 
         Once ``close`` is called, the channel allows in-progress ``put``
-        operations to complete and the buffer to clear, and then 
+        operations to complete and the buffer to clear, and then
 
         """
         with self._lock:
@@ -347,11 +346,13 @@ class Chan(object):
     def __iter__(self):
         return self
 
-    def next(self):
+    def __next__(self):
         try:
             return self.get()
         except ChanClosed:
             raise StopIteration
+
+    next = __next__
 
 
 def chanselect(consumers, producers, timeout=None):
@@ -409,7 +410,7 @@ def chanselect(consumers, producers, timeout=None):
     random.shuffle(group.wishes)
 
     chan_locks_ordered = list(set(wish.chan._lock for wish in group.wishes))
-    chan_locks_ordered.sort()
+    chan_locks_ordered.sort(key=id)
 
     with all_locked(chan_locks_ordered):
         # Checks for blocked threads that we can satisfy

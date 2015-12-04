@@ -37,17 +37,17 @@ def accumulator(chan, into=None):
 class RingBufferTests(unittest.TestCase):
     def test_pushpop(self):
         buf = RingBuffer(4)
-        for i in xrange(12):
+        for i in range(12):
             buf.push(i)
             self.assertEqual(buf.pop(), i)
 
     def test_fillunfill(self):
         S = 4
         buf = RingBuffer(S)
-        for i in xrange(12):
-            for j in xrange(S):
+        for i in range(12):
+            for j in range(S):
                 buf.push(100 * i + j)
-            for j in xrange(S):
+            for j in range(S):
                 self.assertEqual(buf.pop(), 100 * i + j)
 
             # Moves ahead one space
@@ -68,24 +68,24 @@ class ChanTests(unittest.TestCase):
         self.assertEqual(results[0], "Hello")
 
     def test_nothing_lost(self):
-        phrases = ['Hello_%03d' % x for x in xrange(1000)]
+        phrases = ['Hello_%03d' % x for x in range(1000)]
         firstchan = Chan()
-        chan_layer1 = [Chan() for i in xrange(6)]
+        chan_layer1 = [Chan() for i in range(6)]
         lastchan = Chan()
         sayer = quickthread(sayset, firstchan, phrases, delay=0.001,
                             __name='sayer')
 
         # Distribute firstchan -> chan_layer1
-        for i in xrange(12):
+        for i in range(12):
             outchans = [chan_layer1[(i+j) % len(chan_layer1)]
-                        for j in xrange(3)]
+                        for j in range(3)]
             quickthread(distributer, [firstchan], outchans, delay_max=0.005,
                         __name='dist_layer1_%02d' % i)
 
         # Distribute chan_layer1 -> lastchan
-        for i in xrange(12):
+        for i in range(12):
             inchans = [chan_layer1[(i+j) % len(chan_layer1)]
-                       for j in xrange(0, 9, 3)]
+                       for j in range(0, 9, 3)]
             quickthread(distributer, inchans, [lastchan], delay_max=0.005,
                         __name='dist_layer2_%02d' % i)
 
@@ -105,10 +105,10 @@ class ChanTests(unittest.TestCase):
 
         def listener():
             it = iter(c)
-            self.assertEqual(it.next(), 1)
-            self.assertEqual(it.next(), 2)
-            self.assertEqual(it.next(), 3)
-            self.assertRaises(StopIteration, it.next)
+            self.assertEqual(next(it), 1)
+            self.assertEqual(next(it), 2)
+            self.assertEqual(next(it), 3)
+            self.assertRaises(StopIteration, it.__next__)
         t = quickthread(listener)
 
         time.sleep(0.1)
@@ -134,7 +134,7 @@ class ChanTests(unittest.TestCase):
         self.assertRaises(Timeout, c.get, timeout=0)
 
     def test_select_and_closed(self):
-        a, b, c = [Chan() for _ in xrange(3)]
+        a, b, c = [Chan() for _ in range(3)]
         out = Chan()
         quickthread(sayset, a, [0, 1, 2], delay=0.01, __name='sayset1')
         quickthread(sayset, b, [3, 4, 5], delay=0.01, __name='sayset2')
@@ -164,26 +164,26 @@ class ChanTests(unittest.TestCase):
     def test_buf_simple(self):
         S = 5
         c = Chan(S)
-        for i in xrange(S):
+        for i in range(S):
             c.put(i)
         c.close()
 
         results = list(c)
-        self.assertEqual(results, range(S))
+        self.assertEqual(results, list(range(S)))
 
     def test_buf_overfull(self):
         c = Chan(5)
-        quickthread(sayset, c, range(20), delay=0)
+        quickthread(sayset, c, list(range(20)), delay=0)
         time.sleep(0.1)  # Fill up buffer
 
         results = list(c)
-        self.assertEqual(results, range(20))
+        self.assertEqual(results, list(range(20)))
 
     def test_buf_kept_empty(self):
         c = Chan(5)
-        quickthread(sayset, c, range(20), delay=0.02)
+        quickthread(sayset, c, list(range(20)), delay=0.02)
         results = list(c)
-        self.assertEqual(results, range(20))
+        self.assertEqual(results, list(range(20)))
 
 if __name__ == '__main__':
     unittest.main()
