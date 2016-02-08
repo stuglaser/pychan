@@ -1,4 +1,5 @@
-import os, os.path
+import os
+import os.path
 from setuptools import setup
 
 DIR = os.path.dirname(__file__)
@@ -26,8 +27,10 @@ setup(
         'Operating System :: OS Independent',
         'Natural Language :: English',
         'Programming Language :: Python',
+        'Programming Language :: Python :: 2',
         'Programming Language :: Python :: 2.6',
         'Programming Language :: Python :: 2.7',
-        'Programming Language :: Python :: 2 :: Only',
+        'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.4',
     ],
 )
